@@ -14,9 +14,12 @@
       },
       "username": {
         "title": "Username",
-        "type": "email",
+        "type": "string",
         "required": true,
-        "placeholder": "Enter your Email"
+        "placeholder": "Enter your Email",
+        "x-schema-form": {
+          "type": "email"
+        }
       },
       "password": {
         "title": "Password",
