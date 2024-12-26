@@ -38,7 +38,7 @@ export class ChargerAccessory {
     this.device = this.accessory.context.device;
     this.lastUpdated = new Date();
 
-    this.queue = new PQueue({ concurrency: 1 });
+    this.queue = this.platform.queue;
 
     this.states = {
       LockCurrentState: this.platform.Characteristic.LockCurrentState.UNSECURED,
@@ -119,7 +119,13 @@ export class ChargerAccessory {
   updateState<
     K extends keyof typeof this.states & keyof (typeof this.platform)['Characteristic'],
     V extends (typeof this.states)[K],
-  >(service: 'lock' | 'outlet', state: K, value: V, skipCharacteristicUpdate = false, forced = false) {
+  >(
+    service: 'lock' | 'outlet' | 'contactSensor',
+    state: K,
+    value: V,
+    skipCharacteristicUpdate = false,
+    forced = false,
+  ) {
     if (value === this.states[state] && !forced) {
       this.log.debug(this.device.address, 'Ignoring update', state, this.states[state], '->', value);
       return;
@@ -129,7 +135,7 @@ export class ChargerAccessory {
 
     this.states[state] = value;
 
-    if (!skipCharacteristicUpdate) {
+    if (skipCharacteristicUpdate) {
       return;
     }
 
@@ -139,6 +145,9 @@ export class ChargerAccessory {
         break;
       case 'outlet':
         this.outletService.updateCharacteristic(this.platform.Characteristic[state], value);
+        break;
+      case 'contactSensor':
+        this.contactSensorService.updateCharacteristic(this.platform.Characteristic[state], value);
         break;
     }
   }
@@ -160,6 +169,7 @@ export class ChargerAccessory {
     this.updateState('lock', 'LockCurrentState', this.computeLockCurrentState());
     this.updateState('lock', 'LockTargetState', this.computeLockCurrentState(), true);
     this.updateState('outlet', 'On', this.computeOutletOn());
+    this.updateState('contactSensor', 'ContactSensorState', this.computeContactSensorState());
   }
 
   computeLockCurrentState() {
@@ -228,7 +238,11 @@ export class ChargerAccessory {
   }
 
   computeOutletOn() {
-    return this.session?.IsPaused ?? false;
+    if (!this.session) {
+      return false;
+    }
+
+    return !this.session.IsPaused;
   }
 
   getOutletOn() {
@@ -286,9 +300,11 @@ export class ChargerAccessory {
 
   computeContactSensorState() {
     if (this.sessionAlive) {
+      this.log.debug('Contact detected');
       return this.platform.Characteristic.ContactSensorState.CONTACT_DETECTED;
     }
 
+    this.log.debug('Contact NOT detected');
     return this.platform.Characteristic.ContactSensorState.CONTACT_NOT_DETECTED;
   }
 

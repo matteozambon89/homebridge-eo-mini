@@ -12,6 +12,7 @@ import { ChargerAccessory } from './platformAccessory.js';
 import { PLATFORM_NAME, PLUGIN_NAME } from './settings.js';
 
 import { EoMiniApi } from './api.js';
+import PQueue from 'p-queue';
 
 /**
  * HomebridgePlatform
@@ -30,6 +31,8 @@ export class EOMiniPlatform implements DynamicPlatformPlugin {
   public _client: EoMiniApi | undefined = undefined;
 
   private timeout: NodeJS.Timeout | undefined = undefined;
+
+  public queue: PQueue = new PQueue({ concurrency: 1 });
 
   constructor(public readonly log: Logging, public readonly config: PlatformConfig, public readonly api: API) {
     this.Service = api.hap.Service;
@@ -147,6 +150,8 @@ export class EOMiniPlatform implements DynamicPlatformPlugin {
 
         // link the accessory to your platform
         this.api.registerPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [accessory]);
+
+        this.accessories.set(uuid, accessory);
       }
 
       // push into discoveredCacheUUIDs
@@ -162,6 +167,8 @@ export class EOMiniPlatform implements DynamicPlatformPlugin {
         this.api.unregisterPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [accessory]);
       }
     }
+
+    await this.updateDevices();
   }
 
   async updateDevices() {
@@ -169,6 +176,16 @@ export class EOMiniPlatform implements DynamicPlatformPlugin {
       clearInterval(this.timeout);
     }
 
+    await this.queue.add(this.updateDevicesInner.bind(this));
+
+    this.timeout = setInterval(() => {
+      setImmediate(() => {
+        this.updateDevices();
+      });
+    }, this.config.refreshRate * 1000);
+  }
+
+  async updateDevicesInner() {
     this.log.debug('Updating devices');
 
     const devices = await this.listDevices();
@@ -195,11 +212,5 @@ export class EOMiniPlatform implements DynamicPlatformPlugin {
       // existingAccessory.context.device = device;
       this.api.updatePlatformAccessories([existingAccessory]);
     }
-
-    this.timeout = setInterval(() => {
-      setImmediate(() => {
-        this.updateDevices();
-      });
-    }, this.config.refreshRate * 1000);
   }
 }
