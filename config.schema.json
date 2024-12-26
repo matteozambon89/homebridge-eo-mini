@@ -1,5 +1,5 @@
 {
-  "pluginAlias": "ExampleHomebridgePlugin",
+  "pluginAlias": "HomebridgeEOMini",
   "pluginType": "platform",
   "singular": true,
   "strictValidation": false,
@@ -10,7 +10,28 @@
         "title": "Name",
         "type": "string",
         "required": true,
-        "default": "Example Dynamic Platform"
+        "default": "EO Mini"
+      },
+      "username": {
+        "title": "Username",
+        "type": "email",
+        "required": true,
+        "placeholder": "Enter your Email"
+      },
+      "password": {
+        "title": "Password",
+        "type": "string",
+        "required": true,
+        "placeholder": "Enter your Password",
+        "x-schema-form": {
+          "type": "password"
+        }
+      },
+      "refreshRate": {
+        "title": "Refresh Rate",
+        "type": "number",
+        "placeholder": 30,
+        "description": "Indicates the number of seconds between polls of EO API."
       }
     }
   }

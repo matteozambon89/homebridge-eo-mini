@@ -1,148 +1,298 @@
-import type { CharacteristicValue, PlatformAccessory, Service } from 'homebridge';
+import type { CharacteristicValue, Logging, PlatformAccessory, Service } from 'homebridge';
 
-import type { ExampleHomebridgePlatform } from './platform.js';
+import type { EOMiniPlatform } from './platform.js';
+
+import PQueue from 'p-queue';
+
+import { ResponseMini, ResponseSession } from './api.js';
 
 /**
  * Platform Accessory
  * An instance of this class is created for each accessory your platform registers
  * Each accessory may expose multiple services of different service types.
  */
-export class ExamplePlatformAccessory {
-  private service: Service;
+export class ChargerAccessory {
+  private lockService: Service;
+  private outletService: Service;
+  private contactSensorService: Service;
 
-  /**
-   * These are just used to create a working example
-   * You should implement your own code to track the state of your accessory
-   */
-  private exampleStates = {
-    On: false,
-    Brightness: 100,
+  private log: Logging;
+
+  private device: ResponseMini;
+  private session: ResponseSession | null = null;
+  private sessionAlive: boolean = false;
+  private lastUpdated: Date;
+
+  private queue: PQueue;
+
+  private states: {
+    LockCurrentState: number;
+    LockTargetState: number;
+    On: boolean;
+    ContactSensorState: number;
   };
 
-  constructor(
-    private readonly platform: ExampleHomebridgePlatform,
-    private readonly accessory: PlatformAccessory,
-  ) {
+  constructor(private readonly platform: EOMiniPlatform, private readonly accessory: PlatformAccessory) {
+    this.log = this.platform.log;
+
+    this.device = this.accessory.context.device;
+    this.lastUpdated = new Date();
+
+    this.queue = new PQueue({ concurrency: 1 });
+
+    this.states = {
+      LockCurrentState: this.platform.Characteristic.LockCurrentState.UNSECURED,
+      LockTargetState: this.platform.Characteristic.LockTargetState.UNSECURED,
+      On: false,
+      ContactSensorState: this.platform.Characteristic.ContactSensorState.CONTACT_NOT_DETECTED,
+    };
+
     // set accessory information
-    this.accessory.getService(this.platform.Service.AccessoryInformation)!
-      .setCharacteristic(this.platform.Characteristic.Manufacturer, 'Default-Manufacturer')
-      .setCharacteristic(this.platform.Characteristic.Model, 'Default-Model')
-      .setCharacteristic(this.platform.Characteristic.SerialNumber, 'Default-Serial');
+    this.accessory
+      .getService(this.platform.Service.AccessoryInformation)!
+      .setCharacteristic(this.platform.Characteristic.Manufacturer, 'EO')
+      .setCharacteristic(this.platform.Characteristic.Model, this.device.chargerModel + '')
+      .setCharacteristic(this.platform.Characteristic.SerialNumber, this.device.chargerAddress + '');
 
-    // get the LightBulb service if it exists, otherwise create a new LightBulb service
-    // you can create multiple services for each accessory
+    this.lockService =
+      this.accessory.getService(this.platform.Service.LockMechanism) ||
+      this.accessory.addService(this.platform.Service.LockMechanism);
 
-    if (accessory.context.device.CustomService) {
-      // This is only required when using Custom Services and Characteristics not support by HomeKit
-      this.service = this.accessory.getService(this.platform.CustomServices[accessory.context.device.CustomService]) ||
-        this.accessory.addService(this.platform.CustomServices[accessory.context.device.CustomService]);
-    } else {
-      this.service = this.accessory.getService(this.platform.Service.Lightbulb) || this.accessory.addService(this.platform.Service.Lightbulb);
+    this.lockService
+      .getCharacteristic(this.platform.Characteristic.LockCurrentState)
+      .onGet(this.getLockCurrentState.bind(this));
+
+    this.lockService
+      .getCharacteristic(this.platform.Characteristic.LockTargetState)
+      .onGet(this.getLockTargetState.bind(this))
+      .onSet(this.setLockTargetState.bind(this));
+
+    this.outletService =
+      this.accessory.getService(this.platform.Service.Outlet) ||
+      this.accessory.addService(this.platform.Service.Outlet);
+
+    this.outletService
+      .getCharacteristic(this.platform.Characteristic.On)
+      .onGet(this.getOutletOn.bind(this))
+      .onSet(this.setOutletOn.bind(this));
+
+    this.contactSensorService =
+      this.accessory.getService(this.platform.Service.ContactSensor) ||
+      this.accessory.addService(this.platform.Service.ContactSensor);
+
+    this.contactSensorService
+      .getCharacteristic(this.platform.Characteristic.ContactSensorState)
+      .onGet(this.getContactSensorState.bind(this));
+
+    this.checkSession();
+
+    setInterval(() => {
+      if (this.queue.size + this.queue.pending > 0) {
+        this.log.debug(this.device.address, 'Skipping update (queue is not empty)');
+        return;
+      }
+      if (this.accessory.context.lastUpdated <= this.lastUpdated) {
+        return;
+      }
+
+      this.log.debug(this.device.address, 'Checking for updates', this.accessory.context.lastUpdated, this.lastUpdated);
+
+      this.device = this.accessory.context.device;
+      this.lastUpdated = new Date();
+
+      this.checkSession();
+    }, 1000);
+  }
+
+  printStateInfo<
+    K extends keyof typeof this.states & keyof (typeof this.platform)['Characteristic'],
+    V extends (typeof this.states)[K],
+  >(state: K, value: V) {
+    const from = Object.entries(this.platform.Characteristic[state]).find(([, v]) => v === this.states[state]) || [
+      this.states[state],
+    ];
+    const to = Object.entries(this.platform.Characteristic[state]).find(([, v]) => v === value) || [value];
+
+    this.log.info(this.device.address, state, from[0], '->', to[0]);
+  }
+
+  updateState<
+    K extends keyof typeof this.states & keyof (typeof this.platform)['Characteristic'],
+    V extends (typeof this.states)[K],
+  >(service: 'lock' | 'outlet', state: K, value: V, skipCharacteristicUpdate = false, forced = false) {
+    if (value === this.states[state] && !forced) {
+      this.log.debug(this.device.address, 'Ignoring update', state, this.states[state], '->', value);
+      return;
     }
 
-    // set the service name, this is what is displayed as the default name on the Home app
-    // in this example we are using the name we stored in the `accessory.context` in the `discoverDevices` method.
-    this.service.setCharacteristic(this.platform.Characteristic.Name, accessory.context.device.exampleDisplayName);
+    this.printStateInfo(state, value);
 
-    // each service must implement at-minimum the "required characteristics" for the given service type
-    // see https://developers.homebridge.io/#/service/Lightbulb
+    this.states[state] = value;
 
-    // register handlers for the On/Off Characteristic
-    this.service.getCharacteristic(this.platform.Characteristic.On)
-      .onSet(this.setOn.bind(this)) // SET - bind to the `setOn` method below
-      .onGet(this.getOn.bind(this)); // GET - bind to the `getOn` method below
+    if (!skipCharacteristicUpdate) {
+      return;
+    }
 
-    // register handlers for the Brightness Characteristic
-    this.service.getCharacteristic(this.platform.Characteristic.Brightness)
-      .onSet(this.setBrightness.bind(this)); // SET - bind to the `setBrightness` method below
-
-    /**
-     * Creating multiple services of the same type.
-     *
-     * To avoid "Cannot add a Service with the same UUID another Service without also defining a unique 'subtype' property." error,
-     * when creating multiple services of the same type, you need to use the following syntax to specify a name and subtype id:
-     * this.accessory.getService('NAME') || this.accessory.addService(this.platform.Service.Lightbulb, 'NAME', 'USER_DEFINED_SUBTYPE_ID');
-     *
-     * The USER_DEFINED_SUBTYPE must be unique to the platform accessory (if you platform exposes multiple accessories, each accessory
-     * can use the same subtype id.)
-     */
-
-    // Example: add two "motion sensor" services to the accessory
-    const motionSensorOneService = this.accessory.getService('Motion Sensor One Name')
-      || this.accessory.addService(this.platform.Service.MotionSensor, 'Motion Sensor One Name', 'YourUniqueIdentifier-1');
-
-    const motionSensorTwoService = this.accessory.getService('Motion Sensor Two Name')
-      || this.accessory.addService(this.platform.Service.MotionSensor, 'Motion Sensor Two Name', 'YourUniqueIdentifier-2');
-
-    /**
-     * Updating characteristics values asynchronously.
-     *
-     * Example showing how to update the state of a Characteristic asynchronously instead
-     * of using the `on('get')` handlers.
-     * Here we change update the motion sensor trigger states on and off every 10 seconds
-     * the `updateCharacteristic` method.
-     *
-     */
-    let motionDetected = false;
-    setInterval(() => {
-      // EXAMPLE - inverse the trigger
-      motionDetected = !motionDetected;
-
-      // push the new value to HomeKit
-      motionSensorOneService.updateCharacteristic(this.platform.Characteristic.MotionDetected, motionDetected);
-      motionSensorTwoService.updateCharacteristic(this.platform.Characteristic.MotionDetected, !motionDetected);
-
-      this.platform.log.debug('Triggering motionSensorOneService:', motionDetected);
-      this.platform.log.debug('Triggering motionSensorTwoService:', !motionDetected);
-    }, 10000);
+    switch (service) {
+      case 'lock':
+        this.lockService.updateCharacteristic(this.platform.Characteristic[state], value);
+        break;
+      case 'outlet':
+        this.outletService.updateCharacteristic(this.platform.Characteristic[state], value);
+        break;
+    }
   }
 
-  /**
-   * Handle "SET" requests from HomeKit
-   * These are sent when the user changes the state of an accessory, for example, turning on a Light bulb.
-   */
-  async setOn(value: CharacteristicValue) {
-    // implement your own code to turn your device on/off
-    this.exampleStates.On = value as boolean;
+  checkSession() {
+    this.log.debug(this.device.address, 'Check session');
 
-    this.platform.log.debug('Set Characteristic On ->', value);
+    this.queue.add(async () => {
+      this.session = await this.platform.client.session();
+      this.sessionAlive = await this.platform.client.sessionAlive();
+
+      this.computeAll();
+    });
   }
 
-  /**
-   * Handle the "GET" requests from HomeKit
-   * These are sent when HomeKit wants to know the current state of the accessory, for example, checking if a Light bulb is on.
-   *
-   * GET requests should return as fast as possible. A long delay here will result in
-   * HomeKit being unresponsive and a bad user experience in general.
-   *
-   * If your device takes time to respond you should update the status of your device
-   * asynchronously instead using the `updateCharacteristic` method instead.
-   * In this case, you may decide not to implement `onGet` handlers, which may speed up
-   * the responsiveness of your device in the Home app.
+  computeAll() {
+    this.log.debug(this.device.address, 'Computing all');
 
-   * @example
-   * this.service.updateCharacteristic(this.platform.Characteristic.On, true)
-   */
-  async getOn(): Promise<CharacteristicValue> {
-    // implement your own code to check if the device is on
-    const isOn = this.exampleStates.On;
-
-    this.platform.log.debug('Get Characteristic On ->', isOn);
-
-    // if you need to return an error to show the device as "Not Responding" in the Home app:
-    // throw new this.platform.api.hap.HapStatusError(this.platform.api.hap.HAPStatus.SERVICE_COMMUNICATION_FAILURE);
-
-    return isOn;
+    this.updateState('lock', 'LockCurrentState', this.computeLockCurrentState());
+    this.updateState('lock', 'LockTargetState', this.computeLockCurrentState(), true);
+    this.updateState('outlet', 'On', this.computeOutletOn());
   }
 
-  /**
-   * Handle "SET" requests from HomeKit
-   * These are sent when the user changes the state of an accessory, for example, changing the Brightness
-   */
-  async setBrightness(value: CharacteristicValue) {
-    // implement your own code to set the brightness
-    this.exampleStates.Brightness = value as number;
+  computeLockCurrentState() {
+    return this.device.isDisabled === 1
+      ? this.platform.Characteristic.LockCurrentState.SECURED
+      : this.platform.Characteristic.LockCurrentState.UNSECURED;
+  }
 
-    this.platform.log.debug('Set Characteristic Brightness -> ', value);
+  getLockCurrentState() {
+    return this.states.LockCurrentState;
+  }
+
+  getLockTargetState() {
+    return this.states.LockTargetState;
+  }
+
+  async doEnableOrDisable(action: 'Enable' | 'Disable') {
+    this.log.info(this.device.address, 'Attempt to', action, this.device.address);
+
+    await this.platform.client[`mini${action}`](this.device.address);
+
+    this.log.info(this.device.address, 'Complete to', action, this.device.address);
+  }
+
+  async setLockTargetState(value: CharacteristicValue) {
+    if (value === this.states.LockTargetState || value === this.states.LockCurrentState) {
+      this.log.debug(this.device.address, 'Ignoring setLockTargetState', value, this.states);
+      return;
+    }
+
+    this.updateState('lock', 'LockTargetState', value as number, true);
+
+    let promise: Promise<unknown> | null = null;
+
+    switch (value) {
+      case this.platform.Characteristic.LockTargetState.SECURED:
+        promise = this.doEnableOrDisable('Disable');
+        break;
+      case this.platform.Characteristic.LockTargetState.UNSECURED:
+        promise = this.doEnableOrDisable('Enable');
+        break;
+      default:
+        this.log.error(this.device.address, 'Unknown LockTargetState', value);
+        return;
+    }
+
+    this.queue.add(async () => {
+      try {
+        await promise;
+
+        this.updateState('lock', 'LockCurrentState', value as number);
+      } catch (err) {
+        this.log.error(this.device.address, 'Failed to enable/disable', err);
+
+        this.updateState('lock', 'LockCurrentState', this.platform.Characteristic.LockCurrentState.UNKNOWN);
+      }
+    });
+  }
+
+  async doPauseOrUnpause(action: 'Pause' | 'Unpause') {
+    this.log.info(this.device.address, 'Attempt to', action, this.device.address);
+
+    await this.platform.client[`session${action}`]();
+
+    this.log.info(this.device.address, 'Complete to', action, this.device.address);
+  }
+
+  computeOutletOn() {
+    return this.session?.IsPaused ?? false;
+  }
+
+  getOutletOn() {
+    return this.states.On;
+  }
+
+  resettingOutletOff: boolean = false;
+  resetOutletOff() {}
+
+  setOutletOn(value: CharacteristicValue) {
+    if (!this.sessionAlive) {
+      if (this.resettingOutletOff) {
+        this.resettingOutletOff = false;
+        return;
+      }
+
+      this.log.warn(this.device.address, 'Session not alive', value, this.states);
+      this.resettingOutletOff = true;
+      setTimeout(() => {
+        this.updateState('outlet', 'On', false, true);
+        this.outletService.getCharacteristic(this.platform.Characteristic.On).setValue(false);
+      }, 150);
+      return;
+    }
+
+    if (value === this.states.On) {
+      this.log.debug(this.device.address, 'Ignoring setOutletOn', value, this.states);
+      return;
+    }
+
+    this.updateState('outlet', 'On', value as boolean, false);
+
+    let promise: Promise<unknown> | null = null;
+
+    switch (value) {
+      case false:
+        promise = this.doPauseOrUnpause('Pause');
+        break;
+      case true:
+        promise = this.doPauseOrUnpause('Unpause');
+        break;
+      default:
+        this.log.error(this.device.address, 'Unknown On', value);
+        return;
+    }
+
+    this.queue.add(async () => {
+      try {
+        await promise;
+      } catch (err) {
+        this.log.error(this.device.address, 'Failed to pause/unpause', err);
+      }
+    });
+  }
+
+  computeContactSensorState() {
+    if (this.sessionAlive) {
+      return this.platform.Characteristic.ContactSensorState.CONTACT_DETECTED;
+    }
+
+    return this.platform.Characteristic.ContactSensorState.CONTACT_NOT_DETECTED;
+  }
+
+  getContactSensorState() {
+    return this.states.ContactSensorState;
   }
 }

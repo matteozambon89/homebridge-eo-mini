@@ -1,19 +1,18 @@
 {
-  "name": "homebridge-plugin-name",
-  "displayName": "Plugin Name",
+  "name": "homebridge-eo-mini",
+  "displayName": "Homebridge EO Mini",
   "type": "module",
   "version": "1.0.0",
-  "private": true,
-  "description": "A short description about what your plugin does.",
-  "author": "Your Name",
+  "description": "Homebridge plugin for EO Mini Charger",
+  "author": "Matteo Zambon<matteo@yeeti.co>",
   "license": "Apache-2.0",
-  "homepage": "https://github.com/USERNAME/GITHUB_PROJECT_NAME#readme",
+  "homepage": "https://github.com/matteozambon89/homebridge-eo-mini#readme",
   "repository": {
     "type": "git",
-    "url": "https://github.com/USERNAME/GITHUB_PROJECT_NAME.git"
+    "url": "https://github.com/matteozambon89/homebridge-eo-mini.git"
   },
   "bugs": {
-    "url": "https://github.com/USERNAME/GITHUB_PROJECT_NAME/issues"
+    "url": "https://github.com/matteozambon89/homebridge-eo-mini/issues"
   },
   "keywords": [
     "homebridge-plugin"
@@ -42,6 +41,8 @@
     "typescript-eslint": "^8.12.2"
   },
   "dependencies": {
-    "homebridge-lib": "^7.1.0"
+    "homebridge-lib": "^7.1.0",
+    "node-fetch": "^3.3.2",
+    "p-queue": "^8.0.1"
   }
 }
