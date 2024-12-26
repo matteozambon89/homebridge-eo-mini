@@ -1,3 +1,4 @@
+import { Logging } from 'homebridge';
 import fetch from 'node-fetch';
 
 interface RequestOpts {
@@ -133,7 +134,7 @@ export class EoMiniApi {
    */
   private _authSession: AuthSession | undefined = undefined;
 
-  constructor(private readonly username: string, private readonly password: string) {}
+  constructor(private readonly username: string, private readonly password: string, private log: Logging) {}
 
   /**
    * Flag to check if the auth session is valid
@@ -245,8 +246,9 @@ export class EoMiniApi {
 
     const rawBody = await resp.text();
 
+    this.log.debug('Response', resp.status, resp.ok, rawBody);
+
     if (!resp.ok) {
-      console.log('Request failed', resp.status, resp.ok, rawBody);
       throw new Error('Request failed: ' + rawBody);
     }
 
@@ -257,7 +259,6 @@ export class EoMiniApi {
       try {
         respBody = JSON.parse(rawBody) as T;
       } catch (err) {
-        console.log('Response not JSON', resp.status, resp.ok, rawBody);
         throw new Error('Response not JSON: ' + rawBody);
       }
     }

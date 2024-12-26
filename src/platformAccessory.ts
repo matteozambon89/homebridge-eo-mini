@@ -190,7 +190,7 @@ export class ChargerAccessory {
       return;
     }
 
-    this.updateState('lock', 'LockTargetState', value as number, true);
+    this.updateState('lock', 'LockTargetState', value as number);
 
     let promise: Promise<unknown> | null = null;
 

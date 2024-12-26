@@ -63,7 +63,7 @@ export class EOMiniPlatform implements DynamicPlatformPlugin {
   }
 
   get client() {
-    this._client = this._client || new EoMiniApi(this.config.username, this.config.password);
+    this._client = this._client || new EoMiniApi(this.config.username, this.config.password, this.log);
 
     return this._client;
   }
